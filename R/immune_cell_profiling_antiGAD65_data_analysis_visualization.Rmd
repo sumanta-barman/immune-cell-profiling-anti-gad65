@@ -1,0 +1,745 @@
+---
+title: "Immune Cell Profiling in Anti-GAD65 - Data analysis and Visualization"
+author: "Sumanta Barman"
+date: "2026-01-26"
+
+---
+
+# Overview
+
+This document contains the analysis pipeline for immune cell profiling in anti-GAD65 encephalitis. The analysis includes:
+
+- Single-cell RNA-seq data processing and visualization
+- Cell type annotation using SingleR and Azimuth
+- Differential cell abundance analysis
+- Pseudobulk differential expression analysis
+- B-cell receptor (BCR) repertoire analysis
+- T-cell receptor (TCR) repertoire analysis
+
+# Setup
+
+## Load Required Libraries
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 8
+)
+
+# Single-cell analysis
+library(Seurat)
+library(SeuratDisk)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(DoubletFinder)
+library(reticulate)
+library(SeuratData)
+library(SeuratWrappers)
+library(patchwork)
+library(harmony)
+library(scuttle)
+library(sctransform)
+library(SingleR)
+library(celldex)
+library(pheatmap)
+library(Azimuth)
+library(Signac)
+library(dplyr)
+library(cowplot)
+library(enrichR)
+library(rafalib)
+library(Matrix)
+library(edgeR)
+
+# Differential abundance
+library(speckle)
+library(limma)
+
+# Immune repertoire analysis
+library(immunarch)
+
+# Visualization
+library(EnhancedVolcano)
+library(ggrepel)
+library(RColorBrewer)
+library(ggsci)
+library(ggpubr)
+library(rstatix)
+
+# Set language
+Sys.setenv(lang = "en_US")
+```
+
+---
+
+# Data Loading
+
+## Load Preprocessed Seurat Object
+
+```{r load_data}
+# Load the integrated Seurat object with singlets
+seurat_object <- readRDS(file = "seurat_object_combined_singlets_integrated.rds")
+
+# Display object summary
+seurat_object
+```
+
+---
+
+# Exploratory Visualization
+
+## UMAP Visualization of Integration
+
+```{r umap_integration, fig.width=14, fig.height=10}
+# Visualize different metadata variables on UMAP
+DimPlot(
+  seurat_object, 
+  reduction = "umap.harmony", 
+  group.by = c("sample", "Center", "Disease", "harmony_clusters"), 
+  combine = FALSE, 
+  label.size = 2, 
+  label = TRUE
+)
+```
+
+---
+
+# Cell Type Annotation
+
+## SingleR Annotation
+
+SingleR provides automated cell type annotation using reference datasets.
+
+```{r singler_annotation}
+# Load reference dataset
+ref <- celldex::DatabaseImmuneCellExpressionData()
+
+# Prepare Seurat object for SingleR
+seurat_object_singler <- seurat_object
+seurat_object_singler.counts <- GetAssayData(
+  seurat_object_singler, 
+  slot = "counts", 
+  assay = "SCT"
+)
+
+# Run SingleR prediction
+pred <- SingleR(
+  test = seurat_object_singler.counts,
+  ref = ref,
+  labels = ref$label.fine
+)
+
+# Add SingleR labels to metadata
+seurat_object_singler$singleR.labels <- pred$labels[
+  match(rownames(seurat_object_singler@meta.data), rownames(pred))
+]
+
+# Save annotated object
+saveRDS(seurat_object_singler, file = "immune_cell_profiling_anti_gad65_singler.rds")
+```
+
+### SingleR Visualization
+
+```{r singler_viz, fig.width=12, fig.height=4}
+# Basic UMAP with SingleR labels
+p1 <- DimPlot(
+  seurat_object_singler, 
+  reduction = "umap.harmony", 
+  group.by = "singleR.labels"
+)
+
+# UMAP with labels and repelling
+p2 <- DimPlot(
+  seurat_object_singler, 
+  reduction = "umap.harmony", 
+  group.by = "singleR.labels", 
+  label = TRUE, 
+  repel = TRUE, 
+  label.size = 2
+)
+
+# Split by disease condition
+p3 <- DimPlot(
+  seurat_object_singler, 
+  reduction = "umap.harmony", 
+  group.by = "singleR.labels", 
+  split.by = "Disease", 
+  label = TRUE, 
+  repel = TRUE, 
+  label.size = 3
+)
+
+p1 | p2
+p3
+```
+
+## Azimuth Annotation
+
+Azimuth provides reference-based cell type annotation using PBMC reference.
+
+```{r azimuth_annotation}
+# Prepare object for Azimuth
+seurat_object_azimuth <- seurat_object
+seurat_object_azimuth <- PrepSCTFindMarkers(
+  seurat_object_azimuth, 
+  assay = "SCT", 
+  verbose = TRUE
+)
+
+# Run Azimuth annotation
+seurat_object_azimuth <- RunAzimuth(
+  seurat_object_azimuth, 
+  reference = "pbmcref"
+)
+
+# Save annotated object
+saveRDS(seurat_object_azimuth, file = "immune_cell_profiling_anti_gad65_azimuth.rds")
+```
+
+### Azimuth Visualization
+
+```{r azimuth_viz, fig.width=14, fig.height=5}
+# UMAP without legend
+p1 <- DimPlot(
+  seurat_object_azimuth, 
+  reduction = "umap.harmony", 
+  group.by = "predicted.celltype.l2", 
+  label = TRUE, 
+  repel = TRUE, 
+  label.size = 2
+) + NoLegend()
+
+# UMAP with legend
+p2 <- DimPlot(
+  seurat_object_azimuth, 
+  reduction = "umap.harmony", 
+  group.by = "predicted.celltype.l2", 
+  label = TRUE, 
+  repel = TRUE, 
+  label.size = 3
+)
+
+# Split by disease
+p3 <- DimPlot(
+  seurat_object_azimuth, 
+  reduction = "umap.harmony", 
+  group.by = "predicted.celltype.l2", 
+  split.by = "Disease", 
+  label = TRUE, 
+  repel = TRUE, 
+  label.size = 3
+) + NoLegend()
+
+p1 | p2
+p3
+```
+
+## Marker Gene Identification
+
+Identify cluster-specific marker genes for manual annotation.
+
+```{r find_markers}
+# Prepare for marker finding
+seurat_object <- PrepSCTFindMarkers(seurat_object, assay = "SCT", verbose = TRUE)
+DefaultAssay(seurat_object)
+
+# Set identity to harmony clusters
+Idents(seurat_object) <- "harmony_clusters"
+
+# Find markers using Wilcoxon test
+markers_genes_RNA_wilcox <- FindAllMarkers(
+  seurat_object, 
+  test.use = "wilcox",
+  only.pos = TRUE, 
+  assay = "SCT"
+)
+
+# Save markers
+write.csv(
+  markers_genes_RNA_wilcox, 
+  "cluster_markers_wilcox.csv", 
+  row.names = FALSE
+)
+```
+
+## Manual Annotation
+
+Based on SingleR, Azimuth, and marker genes, assign cell type labels.
+
+```{r manual_annotation}
+# Create annotated object
+seurat_object_annotated <- seurat_object
+
+# Define cell type labels for each cluster
+replacement_names <- c(
+  "0" = "CD4+ Naive T",
+  "1" = "CD4+ TCM",
+  "2" = "CD8+ TEM, MAIT, gDT",
+  "3" = "NK1",
+  "4" = "CD8+ TEM",
+  "5" = "Granulo",
+  "6" = "cDC2",
+  "7" = "Activated CD4+ TSCM",
+  "8" = "CD8+ Naive T",
+  "9" = "cDC1",
+  "10" = "BC1",
+  "12" = "BC2",
+  "13" = "CD16+ Mono",
+  "14" = "NK2",
+  "16" = "Mega",
+  "17" = "pDC",
+  "18" = "CD14+ Mono",
+  "19" = "Memory BC",
+  "20" = "Plasma",
+  "21" = "Microglia-like",
+  "24" = "BC3"
+)
+
+# Add annotations to metadata
+metadata <- seurat_object_annotated@meta.data
+metadata$annotate <- replacement_names[as.character(metadata$harmony_clusters)]
+seurat_object_annotated@meta.data <- metadata
+
+# Save annotated object
+saveRDS(seurat_object_annotated, file = "immune_cell_profiling_anti_gad65_annotated.rds")
+```
+
+### Visualization of Annotated Clusters
+
+```{r annotated_viz, fig.width=14, fig.height=5}
+# UMAP with cell type labels
+p1 <- DimPlot(
+  seurat_object_annotated, 
+  reduction = "umap.harmony", 
+  group.by = "annotate", 
+  label = TRUE
+)
+
+# Split by disease
+p2 <- DimPlot(
+  seurat_object_annotated, 
+  reduction = "umap.harmony", 
+  group.by = "annotate", 
+  split.by = "Disease"
+)
+
+# Split by sample type
+p3 <- DimPlot(
+  seurat_object_annotated, 
+  reduction = "umap.harmony", 
+  group.by = "annotate", 
+  split.by = "Sampletype"
+)
+
+p1
+p2
+p3
+```
+
+---
+
+# Differential Cell Abundance Analysis
+
+Using Propeller/Speckle to test for changes in cell type proportions.
+
+## Explore Cell Type Proportions
+
+```{r cell_proportions}
+# Display cell counts
+table(seurat_object_annotated$annotate)
+table(seurat_object_annotated$sample)
+```
+
+### Proportions by Sample Type (CSF vs PBMC)
+
+```{r props_sampletype, fig.width=10, fig.height=6}
+# Calculate transformed proportions
+props_csf_pbmc <- getTransformedProps(
+  clusters = seurat_object_annotated$annotate, 
+  sample = seurat_object_annotated$Sampletype
+)
+
+# Visualize proportions
+p1 <- plotCellTypeProps(
+  clusters = seurat_object_annotated$annotate, 
+  sample = seurat_object_annotated$Sampletype
+) + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Cell Type Proportions by Sample Type")
+
+p1
+```
+
+### Proportions by Disease Status
+
+```{r props_disease, fig.width=10, fig.height=6}
+# Calculate proportions by disease
+props_disease <- getTransformedProps(
+  clusters = seurat_object_annotated$annotate, 
+  sample = seurat_object_annotated$Disease
+)
+
+# Visualize
+p1 <- plotCellTypeProps(
+  clusters = seurat_object_annotated$annotate, 
+  sample = seurat_object_annotated$Disease
+) + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("Cell Type Proportions by Disease Status")
+
+p1
+```
+
+## Subset CSF and PBMC Compartments
+
+```{r subset_compartments}
+# Subset CSF samples
+CSF <- subset(seurat_object_annotated, Sampletype == "CSF")
+cat("CSF samples:", ncol(CSF), "cells\n")
+
+# Subset PBMC samples
+PBMC <- subset(seurat_object_annotated, Sampletype == "PBMC")
+cat("PBMC samples:", ncol(PBMC), "cells\n")
+```
+
+## CSF Compartment Analysis
+
+### Cell Type Proportions in CSF
+
+```{r csf_props, fig.width=10, fig.height=6}
+# Calculate proportions for CSF
+props_csf <- getTransformedProps(
+  clusters = CSF$annotate, 
+  sample = CSF$samplename
+)
+
+# Save proportions
+write.csv(
+  props_csf, 
+  "cluster_abundances_csf_annotated.csv", 
+  quote = FALSE, 
+  row.names = FALSE
+)
+
+# Visualize
+p1 <- plotCellTypeProps(
+  clusters = CSF$annotate, 
+  sample = CSF$samplename
+) + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("CSF: Cell Type Proportions")
+
+p1
+```
+
+### Statistical Testing for CSF
+
+```{r csf_stats}
+# Read CSF proportions data
+df_csf <- read.csv("cluster_abundances_csf_annotated.csv")
+
+# Reshape data for statistical testing
+df_transposed_csf <- df_csf %>%
+  pivot_wider(
+    names_from = Counts.clusters, 
+    values_from = Proportions.Freq, 
+    id_cols = Counts.sample
+  )
+
+# Add group labels
+df_transposed_csf$Group <- ifelse(
+  grepl("^control_", df_transposed_csf$Counts.sample), 
+  "control", 
+  "GAD"
+)
+
+# Prepare data for volcano plot
+df_processed_csf <- df_transposed_csf %>%
+  select(-Counts.sample) %>%
+  select(Group, everything())
+
+# Save processed data
+write.csv(
+  df_processed_csf, 
+  "GAD_vs_control_csf_processed.csv", 
+  row.names = FALSE
+)
+```
+
+### CSF Volcano Plot
+
+```{r csf_volcano, fig.width=10, fig.height=8}
+# Calculate log2 fold change and p-values
+GAD <- df_processed_csf[df_processed_csf$Group == "GAD", -1]
+control <- df_processed_csf[df_processed_csf$Group == "control", -1]
+
+results_log2FC_csf <- data.frame(
+  Cluster = colnames(GAD), 
+  Log2FC = NA, 
+  Log10pvalue = NA
+)
+
+for (i in 1:ncol(GAD)) {
+  x <- GAD[, i]
+  y <- control[, i]
+
+  # Calculate fold change
+  Log2FC <- log2(median(x) / median(y))
+
+  # Calculate p-value
+  pvalue <- wilcox.test(x, y)$p.value
+  Log10pvalue <- -log10(pvalue)
+
+  results_log2FC_csf[i, 2] <- Log2FC
+  results_log2FC_csf[i, 3] <- Log10pvalue
+}
+
+# Remove NA and infinite values
+results_log2FC_csf <- results_log2FC_csf[
+  complete.cases(results_log2FC_csf$Log2FC, results_log2FC_csf$Log10pvalue) & 
+  !is.infinite(results_log2FC_csf$Log2FC) & 
+  !is.infinite(results_log2FC_csf$Log10pvalue), 
+]
+
+# Save results
+write.csv(results_log2FC_csf, "GAD_vs_control_CSF_Log2FC.csv", row.names = FALSE)
+
+# Create volcano plot
+p <- ggplot(
+  data = results_log2FC_csf, 
+  aes(x = Log2FC, y = Log10pvalue, label = Cluster)
+) + 
+  geom_point(shape = 16, size = 4, aes(color = Cluster, fill = Cluster)) + 
+  theme_minimal() +
+  geom_vline(xintercept = c(-0.485, 0.485), col = "red", linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +
+  theme(
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(color = "black")
+  ) +
+  geom_text_repel(aes(label = Cluster), max.overlaps = 20) + 
+  labs(
+    x = "Log2 fold change", 
+    y = "-Log10 p value",
+    title = "CSF: GAD vs Control"
+  )
+
+p
+```
+
+## PBMC Compartment Analysis
+
+### Cell Type Proportions in PBMC
+
+```{r pbmc_props, fig.width=10, fig.height=6}
+# Calculate proportions for PBMC
+props_pbmc <- getTransformedProps(
+  clusters = PBMC$annotate, 
+  sample = PBMC$samplename
+)
+
+# Save proportions
+write.csv(
+  props_pbmc, 
+  "cluster_abundances_pbmc_annotated.csv", 
+  quote = FALSE, 
+  row.names = FALSE
+)
+
+# Visualize
+p1 <- plotCellTypeProps(
+  clusters = PBMC$annotate, 
+  sample = PBMC$samplename
+) + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  ggtitle("PBMC: Cell Type Proportions")
+
+p1
+```
+
+### Statistical Testing for PBMC
+
+```{r pbmc_stats}
+# Read PBMC proportions data
+df_pbmc <- read.csv("cluster_abundances_pbmc_annotated.csv")
+
+# Reshape data
+df_transposed_pbmc <- df_pbmc %>%
+  pivot_wider(
+    names_from = Counts.clusters, 
+    values_from = Proportions.Freq, 
+    id_cols = Counts.sample
+  )
+
+# Add group labels
+df_transposed_pbmc$Group <- ifelse(
+  grepl("^control_", df_transposed_pbmc$Counts.sample), 
+  "control", 
+  "GAD"
+)
+
+# Prepare data
+df_processed_pbmc <- df_transposed_pbmc %>%
+  select(-Counts.sample) %>%
+  select(Group, everything())
+
+# Save processed data
+write.csv(
+  df_processed_pbmc, 
+  "GAD_vs_control_pbmc_processed.csv", 
+  row.names = FALSE
+)
+```
+
+### PBMC Volcano Plot
+
+```{r pbmc_volcano, fig.width=10, fig.height=8}
+# Calculate statistics for PBMC
+GAD_pbmc <- df_processed_pbmc[df_processed_pbmc$Group == "GAD", -1]
+control_pbmc <- df_processed_pbmc[df_processed_pbmc$Group == "control", -1]
+
+results_log2FC_pbmc <- data.frame(
+  Cluster = colnames(GAD_pbmc), 
+  Log2FC = NA, 
+  Log10pvalue = NA
+)
+
+for (i in 1:ncol(GAD_pbmc)) {
+  x <- GAD_pbmc[, i]
+  y <- control_pbmc[, i]
+
+  Log2FC <- log2(median(x) / median(y))
+  pvalue <- wilcox.test(x, y)$p.value
+  Log10pvalue <- -log10(pvalue)
+
+  results_log2FC_pbmc[i, 2] <- Log2FC
+  results_log2FC_pbmc[i, 3] <- Log10pvalue
+}
+
+# Clean results
+results_log2FC_pbmc <- results_log2FC_pbmc[
+  complete.cases(results_log2FC_pbmc$Log2FC, results_log2FC_pbmc$Log10pvalue) & 
+  !is.infinite(results_log2FC_pbmc$Log2FC) & 
+  !is.infinite(results_log2FC_pbmc$Log10pvalue), 
+]
+
+# Save results
+write.csv(results_log2FC_pbmc, "GAD_vs_control_PBMC_Log2FC.csv", row.names = FALSE)
+
+# Create volcano plot
+p <- ggplot(
+  data = results_log2FC_pbmc, 
+  aes(x = Log2FC, y = Log10pvalue, label = Cluster)
+) + 
+  geom_point(shape = 16, size = 4, aes(color = Cluster, fill = Cluster)) + 
+  theme_minimal() +
+  geom_vline(xintercept = c(-0.485, 0.485), col = "red", linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), col = "blue", linetype = "dashed") +
+  theme(
+    axis.line = element_line(color = "black"),
+    axis.ticks = element_line(color = "black")
+  ) +
+  geom_text_repel(aes(label = Cluster), max.overlaps = 20) + 
+  labs(
+    x = "Log2 fold change", 
+    y = "-Log10 p value",
+    title = "PBMC: GAD vs Control"
+  )
+
+p
+```
+
+---
+
+# Differential Gene Expression
+
+## All Clusters: GAD vs Control
+
+```{r dge_all_clusters}
+# Set identity to disease
+Idents(seurat_object_annotated) <- seurat_object_annotated$Disease
+
+# Find DEGs
+dge_control_gad <- FindMarkers(
+  seurat_object_annotated, 
+  ident.1 = "GAD", 
+  ident.2 = "control", 
+  test.use = "wilcox",  
+  logfc.threshold = 0.2, 
+  assay = "SCT"
+)
+
+# Save results
+write.csv(
+  dge_control_gad, 
+  "DEGs_GAD_vs_control_all_clusters.csv", 
+  row.names = TRUE
+)
+```
+
+### Volcano Plot: All Clusters
+
+```{r volcano_all, fig.width=12, fig.height=10}
+# Read DEG results
+df_dge <- read.csv("DEGs_GAD_vs_control_all_clusters.csv", row.names = 1)
+df_dge$gene_symbol <- rownames(df_dge)
+
+# Create volcano plot
+vp <- EnhancedVolcano(
+  df_dge, 
+  x = "avg_log2FC", 
+  y = "p_val_adj", 
+  lab = df_dge$gene_symbol, 
+  pCutoff = 1e-20, 
+  FCcutoff = 1.5,  
+  legendLabels = c(
+    "Not significant",
+    "Log2FC",
+    "p-value",
+    "p-value and Log2FC"
+  ), 
+  legendPosition = "right", 
+  pointSize = 4.0,
+  labSize = 5.0, 
+  labCol = "black",
+  labFace = "bold", 
+  drawConnectors = TRUE, 
+  legendLabSize = 16,
+  legendIconSize = 4.0, 
+  title = "GAD versus Control (All Clusters)"
+)
+
+vp
+```
+
+---
+
+# Session Information
+
+```{r session_info}
+sessionInfo()
+```
