@@ -1,7 +1,6 @@
 ---
 title: "Immune Cell Profiling in Anti-GAD65 - Data analysis and Visualization"
 author: "Sumanta Barman"
-date: "2026-01-26"
 
 ---
 

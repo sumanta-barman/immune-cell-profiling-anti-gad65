@@ -1,7 +1,6 @@
 ---
 title: "Immune cell profiling anti-GAD65 – QC and preprocessing"
 authors: "Sumanta Barman"
-date: "2026-01-26"
 ---
 
 ```{r setup, include=FALSE}
