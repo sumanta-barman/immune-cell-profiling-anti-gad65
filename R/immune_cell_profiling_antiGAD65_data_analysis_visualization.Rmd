@@ -11,7 +11,7 @@ This document contains the analysis pipeline for immune cell profiling in anti-G
 - Single-cell RNA-seq data processing and visualization
 - Cell type annotation using SingleR and Azimuth
 - Differential cell abundance analysis
-- Pseudobulk differential expression analysis
+- Differential gene expression analysis
 - B-cell receptor (BCR) repertoire analysis
 - T-cell receptor (TCR) repertoire analysis
 
