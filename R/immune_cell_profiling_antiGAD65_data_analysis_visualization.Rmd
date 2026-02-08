@@ -341,6 +341,135 @@ p3
 
 ---
 
+
+# Pseudobulk Differential Gene Expression volcano plot
+
+```{r Pseudobulk differential expression volcano_plot}
+# Visualizes differential gene expression between expanded and non-expanded T cell clones
+
+# ---- Load required libraries ----
+library(tidyverse)
+library(EnhancedVolcano)
+
+# ---- Configuration ----
+# Thresholds
+LOG2FC_THRESHOLD <- 0.585  # ~1.5-fold change
+PADJ_THRESHOLD <- 0.05
+N_TOP_GENES <- 10  # Number of top genes to label
+
+# Input file
+INPUT_FILE <- "pseudobulk_deseq2_GAD_CSF_expanded_vs_nonexpanded.csv"
+
+# ---- Load differential expression results ----
+de_results <- read.csv(INPUT_FILE, row.names = 1) %>%
+  rownames_to_column(var = "gene") %>%
+  as_tibble()
+
+cat(sprintf("Loaded %d genes from %s\n", nrow(de_results), INPUT_FILE))
+
+# ---- Define color scheme for significance ----
+color_scheme <- case_when(
+  de_results$log2FoldChange <= -LOG2FC_THRESHOLD & de_results$padj <= PADJ_THRESHOLD ~ "dodgerblue3",
+  de_results$log2FoldChange >= LOG2FC_THRESHOLD & de_results$padj <= PADJ_THRESHOLD ~ "chartreuse3",
+  TRUE ~ "grey"
+)
+
+# Replace NA values with grey
+color_scheme[is.na(color_scheme)] <- "grey"
+
+# Create named vector for legend
+names(color_scheme)[color_scheme == "chartreuse3"] <- "Up-regulated"
+names(color_scheme)[color_scheme == "dodgerblue3"] <- "Down-regulated"
+names(color_scheme)[color_scheme == "grey"] <- "Not significant"
+
+# ---- Identify top differentially expressed genes ----
+# Top up-regulated genes
+top_upregulated <- de_results %>%
+  filter(log2FoldChange >= LOG2FC_THRESHOLD, padj <= PADJ_THRESHOLD) %>%
+  arrange(padj, desc(log2FoldChange)) %>%
+  head(N_TOP_GENES)
+
+# Top down-regulated genes
+top_downregulated <- de_results %>%
+  filter(log2FoldChange <= -LOG2FC_THRESHOLD, padj <= PADJ_THRESHOLD) %>%
+  arrange(padj, log2FoldChange) %>%
+  head(N_TOP_GENES)
+
+# Combine top genes for labeling
+genes_to_label <- c(top_upregulated$gene, top_downregulated$gene)
+
+cat(sprintf("\nIdentified %d up-regulated and %d down-regulated genes\n",
+            nrow(top_upregulated), nrow(top_downregulated)))
+cat("Top labeled genes:", paste(genes_to_label, collapse = ", "), "\n\n")
+
+# ---- Generate volcano plot ----
+volcano_plot <- EnhancedVolcano(
+  de_results,
+  lab = de_results$gene,
+  x = "log2FoldChange",
+  y = "padj",
+  
+  # Significance thresholds
+  pCutoff = PADJ_THRESHOLD,
+  FCcutoff = LOG2FC_THRESHOLD,
+  
+  # Point styling
+  pointSize = 3,
+  colAlpha = 0.6,
+  colCustom = color_scheme,
+  shape = 16,
+  
+  # Axis labels
+  xlab = bquote(~Log[2]~ "fold change"),
+  ylab = bquote(~-Log[10]~ "adjusted p-value"),
+  
+  # Gene labels
+  selectLab = genes_to_label,
+  boxedLabels = TRUE,
+  labSize = 3.5,
+  labFace = "bold",
+  drawConnectors = TRUE,
+  widthConnectors = 0.5,
+  lengthConnectors = unit(0.01, "npc"),
+  arrowheads = FALSE,
+  maxoverlapsConnectors = Inf,
+  max.overlaps = Inf,
+  
+  # Plot annotations
+  title = "Differential Expression: Expanded vs Non-Expanded Clones",
+  subtitle = "GAD Patient CSF T cells (Pseudobulk Analysis)",
+  caption = bquote(~Log[2]~ "FC cutoff: ±" * .(LOG2FC_THRESHOLD) * 
+                   "; Adjusted p-value cutoff: " * .(PADJ_THRESHOLD)),
+  
+  # Legend
+  legendPosition = "right",
+  legendLabSize = 12,
+  legendIconSize = 4.0
+)
+
+# Display plot
+print(volcano_plot)
+
+# ---- Summary statistics ----
+summary_stats <- de_results %>%
+  mutate(
+    regulation = case_when(
+      log2FoldChange >= LOG2FC_THRESHOLD & padj <= PADJ_THRESHOLD ~ "Up-regulated",
+      log2FoldChange <= -LOG2FC_THRESHOLD & padj <= PADJ_THRESHOLD ~ "Down-regulated",
+      TRUE ~ "Not significant"
+    )
+  ) %>%
+  count(regulation)
+
+cat("\n=== Differential Expression Summary ===\n")
+print(summary_stats)
+
+```
+
+
+---
+
+
 # Differential Cell Abundance Analysis
 
 Using Propeller/Speckle to test for changes in cell type proportions.
